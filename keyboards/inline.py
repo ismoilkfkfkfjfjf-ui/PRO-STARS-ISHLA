@@ -1,6 +1,6 @@
 import urllib.parse
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from config import SUPER_ADMINS
+from config import BOT_OWNER_ID
 
 def get_share_keyboard(bot_username: str, user_id: int, ref_bonus: str) -> InlineKeyboardMarkup:
     ref_link = f"https://t.me/{bot_username}?start=ref{user_id}"
@@ -101,17 +101,25 @@ def get_user_actions_keyboard(user_id: int, is_banned: bool) -> InlineKeyboardMa
     )
 
 # Admins Management Inline Keyboards
-def get_admins_mgmt_keyboard(admins: list[dict]) -> InlineKeyboardMarkup:
+def get_admins_mgmt_keyboard(admins: list[dict], current_user_id: int = None) -> InlineKeyboardMarkup:
     buttons = []
+    is_owner = (current_user_id == BOT_OWNER_ID)
+
     for adm in admins:
         uid = adm["user_id"]
         name = adm.get("full_name") or f"Admin {uid}"
-        is_super = uid in SUPER_ADMINS
+        is_supreme = (uid == BOT_OWNER_ID)
 
-        row = [InlineKeyboardButton(text=f"{'👑' if is_super else '👤'} {name} ({uid})", callback_data="noop")]
-        if not is_super:
-            row.append(InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"deladmin:{uid}"))
-        buttons.append(row)
+        if is_supreme:
+            buttons.append([
+                InlineKeyboardButton(text=f"👑 Bosh Ega: {name} ({uid})", callback_data="noop")
+            ])
+        else:
+            row = [InlineKeyboardButton(text=f"👤 {name} ({uid})", callback_data="noop")]
+            # Only the Supreme Bot Owner (618430308) can remove other admins
+            if is_owner:
+                row.append(InlineKeyboardButton(text="🗑 Chiqarish", callback_data=f"deladmin:{uid}"))
+            buttons.append(row)
 
     buttons.append([
         InlineKeyboardButton(text="➕ Yangi Admin qo'shish", callback_data="add_admin")

@@ -1,7 +1,7 @@
 import aiosqlite
 import datetime
 from contextlib import asynccontextmanager
-from config import DB_PATH, DEFAULT_REF_BONUS, MIN_WITHDRAW, INITIAL_ADMINS
+from config import DB_PATH, DEFAULT_REF_BONUS, MIN_WITHDRAW, INITIAL_ADMINS, BOT_OWNER_ID
 
 @asynccontextmanager
 async def get_connection():
@@ -97,8 +97,11 @@ async def init_db():
 
 # --- ADMIN MANAGEMENT HELPERS ---
 
+async def is_bot_owner(user_id: int) -> bool:
+    return user_id == BOT_OWNER_ID
+
 async def is_user_admin(user_id: int) -> bool:
-    if user_id in INITIAL_ADMINS:
+    if user_id == BOT_OWNER_ID:
         return True
     async with get_connection() as conn:
         cursor = await conn.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
@@ -125,6 +128,8 @@ async def add_admin(user_id: int, added_by: int) -> bool:
             return False
 
 async def remove_admin(user_id: int) -> bool:
+    if user_id == BOT_OWNER_ID:
+        return False
     async with get_connection() as conn:
         cursor = await conn.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
         await conn.commit()

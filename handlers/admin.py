@@ -4,7 +4,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from config import SUPER_ADMINS
+from config import BOT_OWNER_ID
 import database as db
 from keyboards.reply import get_admin_keyboard, get_main_keyboard, get_cancel_keyboard
 from keyboards.inline import (
@@ -374,25 +374,38 @@ async def msg_admin_list(message: Message):
         return
 
     admins = await db.get_all_admins()
+    user_id = message.from_user.id
+
     text = (
         "👑 <b>Bot Adminlari Ro'yxati:</b>\n\n"
-        "<i>Eslatma: Asosiy adminlar (Super Adminlar) o'chirilmaydi.</i>\n\n"
+        f"👑 <b>Bosh Ega (Asosiy Egasi):</b>\n"
+        f"• ID: <code>{BOT_OWNER_ID}</code> (Cheksiz vakolatlar: istalgan adminni chiqarib yuborish va huquqlarini o'zgartirish huquqiga ega)\n\n"
+        "👤 <b>Boshqa Adminlar:</b>\n"
     )
 
-    for i, adm in enumerate(admins, 1):
+    count = 1
+    for adm in admins:
         uid = adm["user_id"]
-        is_super = uid in SUPER_ADMINS
-        badge = "👑 Asosiy Admin" if is_super else "👤 Qo'shilgan Admin"
+        if uid == BOT_OWNER_ID:
+            continue
         name = adm.get("full_name") or f"Admin {uid}"
         uname = f"@{adm['username']}" if adm.get("username") else "Yo'q"
 
         text += (
-            f"<b>{i}. {name}</b> ({uname})\n"
-            f"   🆔 ID: <code>{uid}</code> — {badge}\n"
+            f"<b>{count}. {name}</b> ({uname})\n"
+            f"   🆔 ID: <code>{uid}</code>\n"
             f"   ⏰ Qo'shilgan: <i>{adm.get('added_at')}</i>\n\n"
         )
+        count += 1
 
-    await message.answer(text, parse_mode="HTML", reply_markup=get_admins_mgmt_keyboard(admins))
+    if count == 1:
+        text += "<i>Hozircha boshqa adminlar yo'q.</i>\n"
+
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_admins_mgmt_keyboard(admins, current_user_id=user_id)
+    )
 
 # Add Admin Callback & Flow
 @router.callback_query(F.data == "add_admin")
@@ -449,21 +462,34 @@ async def process_new_admin_id(message: Message, state: FSMContext, bot: Bot):
 
 # Delete Admin Callback
 @router.callback_query(F.data.startswith("deladmin:"))
-async def cb_delete_admin(call: CallbackQuery):
-    if not await db.is_user_admin(call.from_user.id):
+async def cb_delete_admin(call: CallbackQuery, bot: Bot):
+    caller_id = call.from_user.id
+    if caller_id != BOT_OWNER_ID:
+        await call.answer("❌ Faqat Bosh Ega (618430308) adminlarni chiqarib yubora oladi!", show_alert=True)
         return
 
     admin_to_del = int(call.data.split(":")[1])
-    if admin_to_del in SUPER_ADMINS:
-        await call.answer("❌ Asosiy (Super) adminlarni o'chirish mumkin emas!", show_alert=True)
+    if admin_to_del == BOT_OWNER_ID:
+        await call.answer("❌ Bosh Egani o'chirish mumkin emas!", show_alert=True)
         return
 
     ok = await db.remove_admin(admin_to_del)
     if ok:
-        await call.answer("✅ Admin muvaffaqiyatli o'chirildi!", show_alert=True)
+        await call.answer("✅ Admin muvaffaqiyatli chiqarib yuborildi va huquqlari bekor qilindi!", show_alert=True)
+        try:
+            await bot.send_message(
+                admin_to_del,
+                "⚠️ <b>Sizning Pro Stars Botidagi adminlik huquqingiz Bosh Ega tomonidan bekor qilindi.</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
         admins = await db.get_all_admins()
         try:
-            await call.message.edit_reply_markup(reply_markup=get_admins_mgmt_keyboard(admins))
+            await call.message.edit_reply_markup(
+                reply_markup=get_admins_mgmt_keyboard(admins, current_user_id=caller_id)
+            )
         except Exception:
             pass
     else:
