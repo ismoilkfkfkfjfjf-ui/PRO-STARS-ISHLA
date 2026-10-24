@@ -60,7 +60,7 @@ Bot ichiga o'rnatilgan `keep_alive.py` web serveri mavjud bo'lib, u Render.com n
    - **Instance Type:** `Free`
 
 5. **Environment Variables** (Muhit o'zgaruvchilari) bo'limiga quyidagilarni kiriting:
-   - `BOT_TOKEN`: `8871643647:AAHVylckulkVw6Y156fgB8PretV1FD03RCQ`
+   - `BOT_TOKEN`: `BOT_TOKENINGIZNI_KIRITING`
    - `ADMINS`: `618430308,8422157752`
    - `DEFAULT_REF_BONUS`: `2`
    - `MIN_WITHDRAW`: `15`

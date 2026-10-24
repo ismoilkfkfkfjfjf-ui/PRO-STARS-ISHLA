@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8871643647:AAHVylckulkVw6Y156fgB8PretV1FD03RCQ").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # Supreme Bot Owner (Bosh Ega - 6 bilan boshlanuvchi yagona eng katta ega)
 BOT_OWNER_ID = 618430308
