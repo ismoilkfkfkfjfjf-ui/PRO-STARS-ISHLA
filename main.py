@@ -47,6 +47,12 @@ async def main():
         logging.error("BOT_TOKEN topilmadi! Iltimos, .env faylini tekshiring.")
         return
 
+    # Start healthcheck server for Render 24/7 web service immediately
+    try:
+        await start_web_server(PORT)
+    except Exception as e:
+        logging.warning(f"Web serverni ishga tushirishda ogohlantirish: {e}")
+
     # Initialize SQLite database (WAL mode for blazing speed)
     logging.info("Ma'lumotlar bazasi ishga tushirilmoqda...")
     await db.init_db()
@@ -55,8 +61,11 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Setup profile texts (Bio, Description, Commands)
-    await setup_bot_profile(bot)
+    # Setup profile texts (Bio, Description, Commands) safely
+    try:
+        await setup_bot_profile(bot)
+    except Exception as e:
+        logging.warning(f"setup_bot_profile xatosi: {e}")
 
     # Register middlewares (Strict mandatory channel subscription)
     from middlewares.subscription import MandatorySubMiddleware
@@ -68,14 +77,11 @@ async def main():
     dp.include_router(withdraw.router)
     dp.include_router(user.router)
 
-    # Start healthcheck server for Render 24/7 web service
     try:
-        await start_web_server(PORT)
+        bot_info = await bot.get_me()
+        logging.info(f"Bot muvaffaqiyatli ishga tushdi: @{bot_info.username} (ID: {bot_info.id})")
     except Exception as e:
-        logging.warning(f"Web serverni ishga tushirishda ogohlantirish: {e}")
-
-    bot_info = await bot.get_me()
-    logging.info(f"Bot muvaffaqiyatli ishga tushdi: @{bot_info.username} (ID: {bot_info.id})")
+        logging.error(f"Botga ulanishda xatolik (BOT_TOKEN ni tekshiring): {e}")
 
     # Start polling
     try:
