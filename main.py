@@ -57,6 +57,11 @@ async def main():
     # Setup profile texts (Bio, Description, Commands)
     await setup_bot_profile(bot)
 
+    # Register middlewares (Strict mandatory channel subscription)
+    from middlewares.subscription import MandatorySubMiddleware
+    dp.message.middleware(MandatorySubMiddleware())
+    dp.callback_query.middleware(MandatorySubMiddleware())
+
     # Register routers (order: admin -> withdraw -> user)
     dp.include_router(admin.router)
     dp.include_router(withdraw.router)

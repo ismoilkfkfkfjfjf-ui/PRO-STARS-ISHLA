@@ -671,11 +671,12 @@ async def cb_add_channel(call: CallbackQuery, state: FSMContext):
 
     await state.set_state(AdminStates.waiting_for_channel)
     await call.message.answer(
-        "📢 <b>Kanal qo'shish formati:</b>\n\n"
-        "<code>@kanal_usernomi Havola Kanal_Nomi</code>\n\n"
-        "Masalan:\n"
-        "<code>@stars_uz https://t.me/stars_uz Rasmiy Kanal</code>\n\n"
-        "⚠️ <i>Botni ushbu kanalga admin qilib qo'yish shart!</i>\n"
+        "📢 <b>Yangi kanal qo'shish:</b>\n\n"
+        "Kanal usernomini yoki havolasini yuboring:\n"
+        "• Masalan: <code>@stars_uz</code> yoki <code>https://t.me/stars_uz</code>\n\n"
+        "<i>Agar kanal yopiq (privat) bo'lsa:</i>\n"
+        "<code>-1001234567890 https://t.me/+havola Kanal Nomi</code>\n\n"
+        "⚠️ <b>Muhim:</b> Botni ushbu kanalga <b>Admin</b> qilib qo'yishingiz kerak!\n\n"
         "Bekor qilish uchun «❌ Bekor qilish» deb yozing.",
         parse_mode="HTML",
         reply_markup=get_cancel_keyboard()
@@ -692,28 +693,67 @@ async def process_add_channel(message: Message, state: FSMContext, bot: Bot):
         await message.answer("Bekor qilindi.", reply_markup=get_admin_keyboard())
         return
 
-    parts = message.text.strip().split(maxsplit=2)
-    if len(parts) < 2:
-        await message.answer("⚠️ Noto'g'ri format. Qaytadan yuboring.", parse_mode="HTML")
-        return
+    raw_text = message.text.strip()
+    channel_id = ""
+    invite_link = ""
+    title = ""
 
-    channel_id = parts[0].strip()
-    invite_link = parts[1].strip()
-    title = parts[2].strip() if len(parts) > 2 else channel_id
+    # Check if multiple parts provided (private channel format)
+    parts = raw_text.split(maxsplit=2)
+    if len(parts) >= 2 and (parts[0].startswith("-100") or parts[0].startswith("-")):
+        channel_id = parts[0].strip()
+        invite_link = parts[1].strip()
+        title = parts[2].strip() if len(parts) > 2 else "Kanal"
+    else:
+        # Public channel username or link
+        clean_user = raw_text.replace("https://t.me/", "").replace("http://t.me/", "").replace("@", "").strip().split("/")[0]
+        if not clean_user:
+            await message.answer("⚠️ Kanal usernomini to'g'ri kiriting (masalan: @kanal yoki https://t.me/kanal).")
+            return
+        channel_id = f"@{clean_user}"
+        invite_link = f"https://t.me/{clean_user}"
+        title = clean_user
 
+    # Test connection to channel via Telegram Bot API
     try:
         chat = await bot.get_chat(channel_id)
         if chat.title:
             title = chat.title
     except Exception as e:
-        await message.answer(f"⚠️ Bot ushbu kanalga ulanolmadi: {e}")
+        await message.answer(
+            f"❌ <b>Bot ushbu kanalga ulanolmadi!</b>\n\n"
+            f"Sabab: <i>{e}</i>\n\n"
+            f"⚠️ <b>Iltimos, avval botni ushbu kanalga Admin qilib qo'shing</b>, so'ngra qaytadan urinib ko'ring.",
+            parse_mode="HTML"
+        )
         return
+
+    # Check if bot has admin rights
+    bot_info = await bot.get_me()
+    try:
+        bot_member = await bot.get_chat_member(chat_id=channel_id, user_id=bot_info.id)
+        if bot_member.status not in ("administrator", "creator"):
+            await message.answer(
+                f"⚠️ <b>Diqqat:</b> Bot «<b>{title}</b>» kanaliga admin qilinmagan!\n"
+                f"A'zolikni to'liq tekshira olishi uchun botga kanalda admin huquqini bering.",
+                parse_mode="HTML"
+            )
+    except Exception:
+        pass
 
     success = await db.add_channel(channel_id, title, invite_link)
     await state.clear()
 
     if success:
-        await message.answer(f"✅ <b>{title}</b> kanali muvaffaqiyatli qo'shildi!", parse_mode="HTML", reply_markup=get_admin_keyboard())
+        await message.answer(
+            f"✅ <b>Kanal muvaffaqiyatli qo'shildi!</b>\n\n"
+            f"📢 Nomi: <b>{title}</b>\n"
+            f"🆔 ID: <code>{channel_id}</code>\n"
+            f"🔗 Havola: {invite_link}\n\n"
+            f"🔒 Endi foydalanuvchilar ushbu kanalga a'zo bo'lmaguncha botdan foydalana olishmaydi!",
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard()
+        )
     else:
         await message.answer("❌ Kanal qo'shishda xatolik yuz berdi.", reply_markup=get_admin_keyboard())
 
