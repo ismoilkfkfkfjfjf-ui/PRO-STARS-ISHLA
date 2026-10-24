@@ -125,3 +125,29 @@ def get_admins_mgmt_keyboard(admins: list[dict], current_user_id: int = None) ->
         InlineKeyboardButton(text="➕ Yangi Admin qo'shish", callback_data="add_admin")
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# Promocodes Management Inline Keyboards
+def get_promocodes_mgmt_keyboard(promocodes: list[dict]) -> InlineKeyboardMarkup:
+    buttons = []
+    for p in promocodes:
+        code = p["code"]
+        reward = int(p["reward"]) if float(p["reward"]).is_integer() else p["reward"]
+        uses = p["uses_count"]
+        max_uses = p["max_uses"]
+        status_icon = "🟢" if (p["is_active"] and uses < max_uses) else "🔴"
+        buttons.append([
+            InlineKeyboardButton(text=f"{status_icon} {code} | {reward}⭐ ({uses}/{max_uses})", callback_data=f"promoinfo:{code}"),
+            InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"delpromo:{code}")
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="➕ Yangi Promokod yaratish", callback_data="add_promocode")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_promo_auto_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎲 Tasodifiy kod yaratish", callback_data="promo:autocode")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="promo:cancel")]
+        ]
+    )

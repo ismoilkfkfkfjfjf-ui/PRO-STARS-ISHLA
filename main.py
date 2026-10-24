@@ -35,6 +35,7 @@ async def setup_bot_profile(bot: Bot):
         # Commands list
         await bot.set_my_commands([
             BotCommand(command="start", description="Botni ishga tushirish / Yangilash"),
+            BotCommand(command="promokod", description="🎟 Maxsus promokodni faollashtirish"),
             BotCommand(command="admin", description="Admin Boshqaruv Paneli")
         ])
         logging.info("Bot profili va buyruqlari muvaffaqiyatli sozlandi.")

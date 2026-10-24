@@ -1,3 +1,5 @@
+import random
+import string
 import asyncio
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
@@ -12,7 +14,9 @@ from keyboards.inline import (
     get_admin_channels_keyboard,
     get_users_mgmt_keyboard,
     get_user_actions_keyboard,
-    get_admins_mgmt_keyboard
+    get_admins_mgmt_keyboard,
+    get_promocodes_mgmt_keyboard,
+    get_promo_auto_keyboard
 )
 
 router = Router()
@@ -26,6 +30,9 @@ class AdminStates(StatesGroup):
     waiting_for_dm_message = State()
     waiting_for_reject_reason = State()
     waiting_for_new_admin_id = State()
+    waiting_for_promo_code = State()
+    waiting_for_promo_reward = State()
+    waiting_for_promo_limit = State()
 
 # Entry points: /admin or "⚙️ Admin Panel"
 @router.message(Command("admin"))
@@ -846,3 +853,234 @@ async def process_broadcast(message: Message, state: FSMContext):
         f"❌ Yetib bormadi (bloklaganlar): <b>{failed} ta</b>",
         parse_mode="HTML"
     )
+
+
+# ==================== 🎟 PROMOKODLAR BOSHQARUVI ====================
+
+@router.message(F.text == "🎟 Promokodlar")
+async def msg_admin_promocodes(message: Message, state: FSMContext):
+    if not await db.is_user_admin(message.from_user.id):
+        return
+
+    await state.clear()
+    promocodes = await db.get_all_promocodes()
+    active_count = sum(1 for p in promocodes if p["is_active"] and p["uses_count"] < p["max_uses"])
+
+    text = (
+        f"🎟 <b>Promokodlar Boshqaruvi</b>\n\n"
+        f"Jami promokodlar: <b>{len(promocodes)} ta</b> (Faol: <b>{active_count} ta</b>)\n\n"
+        f"<i>Eslatma: Yaratilgan promokod kanallarga avtomatik yuborilmaydi. "
+        f"Bot sizga kanalingizga tashlash uchun chiroyli tayyor xabar taqdim etadi — "
+        f"uni o'zingiz nusxalab, xohlagan kanalingizga tashlaysiz!</i>"
+    )
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_promocodes_mgmt_keyboard(promocodes)
+    )
+
+@router.callback_query(F.data == "add_promocode")
+async def cb_add_promocode(call: CallbackQuery, state: FSMContext):
+    if not await db.is_user_admin(call.from_user.id):
+        await call.answer("Ruxsat berilmagan!", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_for_promo_code)
+    await call.message.answer(
+        "🎟 <b>1-qadam: Promokod nomini kiriting:</b>\n\n"
+        "Masalan: <code>YULDUZ10</code>, <code>START2026</code> yoki istalgan so'z.\n"
+        "<i>(Yoki pastdagi tugmani bosib tasodifiy avto-kod generatsiya qiling)</i>",
+        parse_mode="HTML",
+        reply_markup=get_promo_auto_keyboard()
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "promo:autocode")
+async def cb_promo_autocode(call: CallbackQuery, state: FSMContext):
+    if not await db.is_user_admin(call.from_user.id):
+        return
+
+    rand_suffix = "".join(random.choices(string.digits, k=4))
+    auto_code = f"STARS{rand_suffix}"
+    await state.update_data(promo_code=auto_code)
+    await state.set_state(AdminStates.waiting_for_promo_reward)
+
+    await call.message.answer(
+        f"🔑 Tanlangan kod: <code>{auto_code}</code>\n\n"
+        f"⭐ <b>2-qadam: Har bir foydalanuvchiga qancha Stars berilsin?</b>\n\n"
+        f"Masalan: <code>1</code>, <code>2</code>, <code>5</code>, <code>10</code>...\n"
+        f"<i>(Bekor qilish uchun «❌ Bekor qilish» deb yozing)</i>",
+        parse_mode="HTML",
+        reply_markup=get_cancel_keyboard()
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "promo:cancel")
+async def cb_promo_cancel(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    promocodes = await db.get_all_promocodes()
+    try:
+        await call.message.edit_text(
+            "🎟 <b>Promokodlar ro'yxati:</b>",
+            parse_mode="HTML",
+            reply_markup=get_promocodes_mgmt_keyboard(promocodes)
+        )
+    except Exception:
+        pass
+    await call.answer("Bekor qilindi.")
+
+@router.message(AdminStates.waiting_for_promo_code)
+async def process_promo_code_input(message: Message, state: FSMContext):
+    if not await db.is_user_admin(message.from_user.id):
+        return
+
+    text = message.text.strip()
+    if text == "❌ Bekor qilish":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=get_admin_keyboard())
+        return
+
+    code = text.upper()
+    if len(code) < 3 or len(code) > 30:
+        await message.answer("⚠️ Promokod uzunligi 3 tadan 30 tagacha belgidan iborat bo'lishi kerak. Qaytadan kiriting:")
+        return
+
+    existing = await db.get_promocode(code)
+    if existing:
+        await message.answer(f"⚠️ <code>{code}</code> nomli promokod allaqachon mavjud! Iltimos, boshqa nom tanlang:", parse_mode="HTML")
+        return
+
+    await state.update_data(promo_code=code)
+    await state.set_state(AdminStates.waiting_for_promo_reward)
+    await message.answer(
+        f"🔑 Promokod: <code>{code}</code>\n\n"
+        f"⭐ <b>2-qadam: Har bir foydalanuvchiga qancha Stars berilsin?</b>\n\n"
+        f"Masalan: <code>1</code>, <code>2</code>, <code>5</code>, <code>10</code>...\n"
+        f"<i>(Bekor qilish uchun «❌ Bekor qilish» deb yozing)</i>",
+        parse_mode="HTML",
+        reply_markup=get_cancel_keyboard()
+    )
+
+@router.message(AdminStates.waiting_for_promo_reward)
+async def process_promo_reward_input(message: Message, state: FSMContext):
+    if not await db.is_user_admin(message.from_user.id):
+        return
+
+    text = message.text.strip()
+    if text == "❌ Bekor qilish":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=get_admin_keyboard())
+        return
+
+    try:
+        reward = float(text.replace(",", "."))
+        if reward <= 0:
+            raise ValueError()
+    except ValueError:
+        await message.answer("⚠️ Iltimos, noldan katta musbat son kiriting (masalan: 2 yoki 5):")
+        return
+
+    await state.update_data(promo_reward=reward)
+    await state.set_state(AdminStates.waiting_for_promo_limit)
+
+    display_reward = int(reward) if reward.is_integer() else reward
+    await message.answer(
+        f"⭐ Mukofot: <b>{display_reward} ⭐</b>\n\n"
+        f"👥 <b>3-qadam: Ushbu promokodni jami nechta odam ishlata olsin? (Limit)</b>\n\n"
+        f"Masalan: <code>10</code>, <code>50</code>, <code>100</code> ta foydalanuvchi.\n"
+        f"<i>(Bekor qilish uchun «❌ Bekor qilish» deb yozing)</i>",
+        parse_mode="HTML",
+        reply_markup=get_cancel_keyboard()
+    )
+
+@router.message(AdminStates.waiting_for_promo_limit)
+async def process_promo_limit_input(message: Message, state: FSMContext, bot: Bot):
+    if not await db.is_user_admin(message.from_user.id):
+        return
+
+    text = message.text.strip()
+    if text == "❌ Bekor qilish":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=get_admin_keyboard())
+        return
+
+    if not text.isdigit() or int(text) <= 0:
+        await message.answer("⚠️ Iltimos, limit sonini butun musbat son ko'rinishida kiriting (masalan: 20 yoki 50):")
+        return
+
+    limit = int(text)
+    data = await state.get_data()
+    code = data["promo_code"]
+    reward = data["promo_reward"]
+    await state.clear()
+
+    created = await db.create_promocode(code, reward, limit)
+    if not created:
+        await message.answer("❌ Promokodni saqlashda xatolik yuz berdi. Balki bu kod allaqachon mavjuddir.", reply_markup=get_admin_keyboard())
+        return
+
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+    display_reward = int(reward) if reward.is_integer() else reward
+
+    admin_report = (
+        f"✅ <b>Promokod muvaffaqiyatli yaratildi!</b>\n\n"
+        f"🔑 Kod: <code>{code}</code>\n"
+        f"⭐ Mukofot: <b>{display_reward} ⭐</b>\n"
+        f"👥 Limit: <b>{limit} ta odam</b>\n\n"
+        f"📢 <b>Kanalingizga tashlash uchun tayyor post:</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎁 <b>TEZKOR PROMOKOD!</b>\n\n"
+        f"Botimiz foydalanuvchilari uchun maxsus promokod!\n"
+        f"Birinchi bo'lib kiring va bepul Stars oling!\n\n"
+        f"🔑 Promokod: <code>{code}</code>\n"
+        f"⭐ Mukofot: <b>{display_reward} ⭐ Stars</b>\n"
+        f"👥 Limit: Dastlabki <b>{limit}</b> ta foydalanuvchi uchun!\n\n"
+        f"👇 Botga kirib <b>«🎟 Promokod»</b> bo'limiga yozing:\n"
+        f"👉 @{bot_username}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>(Ushbu xabarni nusxalab kanalingizga yuborishingiz mumkin)</i>"
+    )
+
+    await message.answer(admin_report, parse_mode="HTML", reply_markup=get_admin_keyboard())
+
+@router.callback_query(F.data.startswith("delpromo:"))
+async def cb_delete_promocode(call: CallbackQuery):
+    if not await db.is_user_admin(call.from_user.id):
+        await call.answer("Ruxsat berilmagan!", show_alert=True)
+        return
+
+    code = call.data.split(":")[1]
+    await db.delete_promocode(code)
+    await call.answer(f"🗑 {code} o'chirildi!", show_alert=True)
+
+    promocodes = await db.get_all_promocodes()
+    try:
+        await call.message.edit_reply_markup(
+            reply_markup=get_promocodes_mgmt_keyboard(promocodes)
+        )
+    except Exception:
+        pass
+
+@router.callback_query(F.data.startswith("promoinfo:"))
+async def cb_promocode_info(call: CallbackQuery):
+    if not await db.is_user_admin(call.from_user.id):
+        return
+
+    code = call.data.split(":")[1]
+    promo = await db.get_promocode(code)
+    if not promo:
+        await call.answer("Promokod topilmadi!", show_alert=True)
+        return
+
+    reward = int(promo["reward"]) if float(promo["reward"]).is_integer() else promo["reward"]
+    status_str = "🟢 Faol" if (promo["is_active"] and promo["uses_count"] < promo["max_uses"]) else "🔴 Limit tugagan / Nofaol"
+
+    info_text = (
+        f"🎟 <b>Promokod:</b> <code>{promo['code']}</code>\n"
+        f"⭐ <b>Mukofot:</b> {reward} ⭐\n"
+        f"👥 <b>Foydalanildi:</b> {promo['uses_count']} / {promo['max_uses']} ta\n"
+        f"📊 <b>Holati:</b> {status_str}\n"
+        f"📅 <b>Yaratilgan:</b> {promo['created_at']}"
+    )
+    await call.answer(f"{promo['code']}: {promo['uses_count']}/{promo['max_uses']} ishlatilgan", show_alert=True)

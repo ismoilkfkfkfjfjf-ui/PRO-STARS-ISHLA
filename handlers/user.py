@@ -1,13 +1,17 @@
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
-from aiogram.filters import CommandStart, CommandObject
+from aiogram.filters import CommandStart, CommandObject, Command
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 import database as db
-from keyboards.reply import get_main_keyboard
+from keyboards.reply import get_main_keyboard, get_cancel_keyboard
 from keyboards.inline import get_share_keyboard, get_sub_channels_keyboard
 from utils.subscription import check_user_subscription
 
 router = Router()
+
+class UserPromoState(StatesGroup):
+    waiting_for_code = State()
 
 # Ban check middleware / filter helper
 async def check_ban(message_or_call) -> bool:
@@ -268,3 +272,81 @@ async def msg_guide(message: Message):
     )
 
     await message.answer(text, parse_mode="HTML")
+
+
+# ==================== 🎟 PROMOKOD ====================
+@router.message(Command("promokod"))
+@router.message(Command("promo"))
+@router.message(F.text == "🎟 Promokod")
+async def msg_enter_promocode(message: Message, state: FSMContext):
+    if await check_ban(message):
+        return
+
+    user_id = message.from_user.id
+    await db.touch_user_activity(user_id)
+    await state.set_state(UserPromoState.waiting_for_code)
+    await message.answer(
+        "🎟 <b>Promokod kiritish</b>\n\n"
+        "Kanal yoki guruhimizda e'lon qilingan maxsus promokodga egamisiz? Uni quyida yozib yuboring va darhol balansingizga bepul Stars oling!\n\n"
+        "<i>(Bekor qilish uchun «❌ Bekor qilish» tugmasini bosing)</i>",
+        parse_mode="HTML",
+        reply_markup=get_cancel_keyboard()
+    )
+
+@router.message(UserPromoState.waiting_for_code)
+async def process_user_promocode(message: Message, state: FSMContext):
+    if await check_ban(message):
+        await state.clear()
+        return
+
+    text = message.text.strip()
+    is_admin = await db.is_user_admin(message.from_user.id)
+
+    if text == "❌ Bekor qilish":
+        await state.clear()
+        await message.answer("Asosiy menyuga qaytdingiz.", reply_markup=get_main_keyboard(is_admin))
+        return
+
+    code = text.upper()
+    success, reason, reward, new_balance = await db.use_promocode(code, message.from_user.id)
+    await state.clear()
+
+    display_reward = int(reward) if float(reward).is_integer() else reward
+    display_bal = int(new_balance) if float(new_balance).is_integer() else new_balance
+
+    if success:
+        await message.answer(
+            f"🎉 <b>Tabriklaymiz! Promokod faollashtirildi!</b>\n\n"
+            f"🔑 Promokod: <code>{code}</code>\n"
+            f"💰 Hisobingizga <b>+{display_reward} ⭐ Stars</b> muvaffaqiyatli qo'shildi!\n"
+            f"💳 Joriy balansingiz: <b>{display_bal} ⭐</b>",
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard(is_admin)
+        )
+    elif reason == "already_used":
+        await message.answer(
+            f"⚠️ <b>Siz bu promokodni allaqachon ishlatgansiz!</b>\n\n"
+            f"Har bir promokoddan bitta hisobda faqat bir marta foydalanish mumkin.",
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard(is_admin)
+        )
+    elif reason == "limit_reached":
+        await message.answer(
+            f"🚫 <b>Afsuski, ushbu promokodning faollashtirish limiti tugagan!</b>\n\n"
+            f"Keyingi tezkor promokodlarni o'tkazib yubormaslik uchun kanalimizni kuzatib boring.",
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard(is_admin)
+        )
+    elif reason == "inactive":
+        await message.answer(
+            f"⚠️ <b>Ushbu promokod hozirda faol emas yoki to'xtatilgan.</b>",
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard(is_admin)
+        )
+    else:
+        await message.answer(
+            f"❌ <b>Bunday promokod topilmadi!</b>\n\n"
+            f"Iltimos, kod to'g'ri yozilganligini tekshirib qaytadan urinib ko'ring.",
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard(is_admin)
+        )

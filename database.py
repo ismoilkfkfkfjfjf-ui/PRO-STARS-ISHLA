@@ -89,6 +89,32 @@ async def init_db():
             )
         """)
 
+        # Promocodes table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS promocodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                reward REAL NOT NULL,
+                max_uses INTEGER NOT NULL,
+                uses_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER DEFAULT 1
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_promocodes_code ON promocodes(code);")
+
+        # Promocode activations table (tracks which user used which promo code)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS promocode_activations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(code, user_id)
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_promo_activations_code_user ON promocode_activations(code, user_id);")
+
         # Default settings if not exist
         await conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ref_bonus', ?)", (str(DEFAULT_REF_BONUS),))
         await conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('min_withdraw', ?)", (str(MIN_WITHDRAW),))
@@ -429,3 +455,93 @@ async def get_stats():
             "rejected_orders": rejected_orders,
             "admins_count": admins_count
         }
+
+# --- PROMOCODE HELPERS ---
+
+async def create_promocode(code: str, reward: float, max_uses: int) -> bool:
+    code = code.strip().upper()
+    async with get_connection() as conn:
+        try:
+            await conn.execute(
+                "INSERT INTO promocodes (code, reward, max_uses) VALUES (?, ?, ?)",
+                (code, float(reward), int(max_uses))
+            )
+            await conn.commit()
+            return True
+        except Exception:
+            return False
+
+async def get_promocode(code: str) -> dict | None:
+    code = code.strip().upper()
+    async with get_connection() as conn:
+        cursor = await conn.execute("SELECT * FROM promocodes WHERE code = ?", (code,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+async def get_all_promocodes() -> list[dict]:
+    async with get_connection() as conn:
+        cursor = await conn.execute("SELECT * FROM promocodes ORDER BY id DESC")
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+async def delete_promocode(code: str) -> bool:
+    code = code.strip().upper()
+    async with get_connection() as conn:
+        await conn.execute("DELETE FROM promocodes WHERE code = ?", (code,))
+        await conn.execute("DELETE FROM promocode_activations WHERE code = ?", (code,))
+        await conn.commit()
+        return True
+
+async def use_promocode(code: str, user_id: int) -> tuple[bool, str, float, float]:
+    """
+    Returns: (success: bool, reason: str, reward: float, new_balance: float)
+    Reasons:
+      - 'not_found'
+      - 'inactive'
+      - 'limit_reached'
+      - 'already_used'
+      - 'success'
+    """
+    code = code.strip().upper()
+    async with get_connection() as conn:
+        cursor = await conn.execute("SELECT * FROM promocodes WHERE code = ?", (code,))
+        promo = await cursor.fetchone()
+        if not promo:
+            return False, "not_found", 0.0, 0.0
+
+        if promo["is_active"] != 1:
+            return False, "inactive", 0.0, 0.0
+
+        if promo["uses_count"] >= promo["max_uses"]:
+            return False, "limit_reached", 0.0, 0.0
+
+        cursor = await conn.execute("SELECT 1 FROM promocode_activations WHERE code = ? AND user_id = ?", (code, user_id))
+        if await cursor.fetchone():
+            return False, "already_used", 0.0, 0.0
+
+        reward = float(promo["reward"])
+
+        # Insert activation record
+        await conn.execute("INSERT INTO promocode_activations (code, user_id) VALUES (?, ?)", (code, user_id))
+
+        # Update uses count & status
+        new_uses = promo["uses_count"] + 1
+        is_active = 0 if new_uses >= promo["max_uses"] else 1
+        await conn.execute(
+            "UPDATE promocodes SET uses_count = ?, is_active = ? WHERE code = ?",
+            (new_uses, is_active, code)
+        )
+
+        # Award Stars to user
+        await conn.execute(
+            "UPDATE users SET balance = balance + ?, last_active = CURRENT_TIMESTAMP WHERE user_id = ?",
+            (reward, user_id)
+        )
+
+        # Get updated user balance
+        cur_u = await conn.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+        row_u = await cur_u.fetchone()
+        new_balance = float(row_u["balance"]) if row_u else reward
+
+        await conn.commit()
+        return True, "success", reward, new_balance

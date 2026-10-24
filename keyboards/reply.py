@@ -5,7 +5,8 @@ def get_main_keyboard(is_admin_user: bool = False) -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="⭐ Stars ishlash")],
         [KeyboardButton(text="⭐ Stars yechish"), KeyboardButton(text="👤 Hisobim")],
-        [KeyboardButton(text="📋 So'rovlarim"), KeyboardButton(text="📖 Qo'llanma")],
+        [KeyboardButton(text="📋 So'rovlarim"), KeyboardButton(text="🎟 Promokod")],
+        [KeyboardButton(text="📖 Qo'llanma")],
     ]
     if is_admin_user:
         buttons.append([KeyboardButton(text="⚙️ Admin Panel")])
@@ -30,7 +31,8 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="👥 Foydalanuvchilar")],
             [KeyboardButton(text="📥 So'rovlar"), KeyboardButton(text="👑 Adminlar")],
             [KeyboardButton(text="💰 Referal narxi"), KeyboardButton(text="📢 Kanallar")],
-            [KeyboardButton(text="✉️ Xabar yuborish"), KeyboardButton(text="🔙 Asosiy menyu")]
+            [KeyboardButton(text="🎟 Promokodlar"), KeyboardButton(text="✉️ Xabar yuborish")],
+            [KeyboardButton(text="🔙 Asosiy menyu")]
         ],
         resize_keyboard=True
     )
