@@ -1,7 +1,7 @@
 import aiosqlite
 import datetime
 from contextlib import asynccontextmanager
-from config import DB_PATH, DEFAULT_REF_BONUS, MIN_WITHDRAW
+from config import DB_PATH, DEFAULT_REF_BONUS, MIN_WITHDRAW, INITIAL_ADMINS
 
 @asynccontextmanager
 async def get_connection():
@@ -28,12 +28,33 @@ async def init_db():
                 referrals_count INTEGER DEFAULT 0,
                 total_withdrawn REAL DEFAULT 0.0,
                 is_banned INTEGER DEFAULT 0,
-                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active);")
 
-        # Orders (Withdrawal requests) table
+        # In case table was created earlier without last_active
+        try:
+            await conn.execute("ALTER TABLE users ADD COLUMN last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        except Exception:
+            pass
+
+        # Admins table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS admins (
+                user_id INTEGER PRIMARY KEY,
+                added_by INTEGER,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Seed initial admins
+        for admin_id in INITIAL_ADMINS:
+            await conn.execute("INSERT OR IGNORE INTO admins (user_id, added_by) VALUES (?, 0)", (admin_id,))
+
+        # Orders table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,19 +95,49 @@ async def init_db():
 
         await conn.commit()
 
-# Settings helpers
-async def get_setting(key: str, default: str = "") -> str:
-    async with get_connection() as conn:
-        cursor = await conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
-        row = await cursor.fetchone()
-        return row["value"] if row else default
+# --- ADMIN MANAGEMENT HELPERS ---
 
-async def set_setting(key: str, value: str):
+async def is_user_admin(user_id: int) -> bool:
+    if user_id in INITIAL_ADMINS:
+        return True
     async with get_connection() as conn:
-        await conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value)))
+        cursor = await conn.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
+        return (await cursor.fetchone()) is not None
+
+async def get_all_admins() -> list[dict]:
+    async with get_connection() as conn:
+        cursor = await conn.execute("""
+            SELECT a.user_id, a.added_by, a.added_at, u.full_name, u.username
+            FROM admins a
+            LEFT JOIN users u ON a.user_id = u.user_id
+            ORDER BY a.added_at ASC
+        """)
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+async def add_admin(user_id: int, added_by: int) -> bool:
+    async with get_connection() as conn:
+        try:
+            await conn.execute("INSERT OR IGNORE INTO admins (user_id, added_by) VALUES (?, ?)", (user_id, added_by))
+            await conn.commit()
+            return True
+        except Exception:
+            return False
+
+async def remove_admin(user_id: int) -> bool:
+    async with get_connection() as conn:
+        cursor = await conn.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+        await conn.commit()
+        return cursor.rowcount > 0
+
+# --- USER MANAGEMENT & ACTIVITY HELPERS ---
+
+async def touch_user_activity(user_id: int):
+    async with get_connection() as conn:
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await conn.execute("UPDATE users SET last_active = ? WHERE user_id = ?", (now, user_id))
         await conn.commit()
 
-# User helpers
 async def get_user(user_id: int):
     async with get_connection() as conn:
         cursor = await conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
@@ -95,13 +146,14 @@ async def get_user(user_id: int):
 
 async def add_or_update_user(user_id: int, full_name: str, username: str, referred_by: int | None = None) -> tuple[dict, bool]:
     async with get_connection() as conn:
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor = await conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         existing = await cursor.fetchone()
 
         if existing:
             await conn.execute(
-                "UPDATE users SET full_name = ?, username = ? WHERE user_id = ?",
-                (full_name, username, user_id)
+                "UPDATE users SET full_name = ?, username = ?, last_active = ? WHERE user_id = ?",
+                (full_name, username, now, user_id)
             )
             await conn.commit()
             return dict(existing), False
@@ -113,9 +165,9 @@ async def add_or_update_user(user_id: int, full_name: str, username: str, referr
                 valid_ref = referred_by
 
         await conn.execute("""
-            INSERT INTO users (user_id, full_name, username, balance, referred_by, referrals_count, total_withdrawn, is_banned)
-            VALUES (?, ?, ?, 0.0, ?, 0, 0.0, 0)
-        """, (user_id, full_name, username, valid_ref))
+            INSERT INTO users (user_id, full_name, username, balance, referred_by, referrals_count, total_withdrawn, is_banned, last_active)
+            VALUES (?, ?, ?, 0.0, ?, 0, 0.0, 0, ?)
+        """, (user_id, full_name, username, valid_ref, now))
         await conn.commit()
 
         cursor = await conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
@@ -142,13 +194,89 @@ async def update_user_balance(user_id: int, delta: float) -> bool:
         await conn.commit()
         return True
 
-async def get_all_user_ids():
+async def set_user_ban(user_id: int, is_banned: int) -> bool:
     async with get_connection() as conn:
-        cursor = await conn.execute("SELECT user_id FROM users WHERE is_banned = 0")
+        cursor = await conn.execute("UPDATE users SET is_banned = ? WHERE user_id = ?", (is_banned, user_id))
+        await conn.commit()
+        return cursor.rowcount > 0
+
+async def search_user(query: str) -> dict | None:
+    query = query.strip().replace("@", "")
+    async with get_connection() as conn:
+        if query.isdigit():
+            cursor = await conn.execute("SELECT * FROM users WHERE user_id = ?", (int(query),))
+        else:
+            cursor = await conn.execute("SELECT * FROM users WHERE LOWER(username) = LOWER(?)", (query,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+async def get_all_user_ids(only_active: bool = False):
+    async with get_connection() as conn:
+        if only_active:
+            cursor = await conn.execute("SELECT user_id FROM users WHERE is_banned = 0")
+        else:
+            cursor = await conn.execute("SELECT user_id FROM users")
         rows = await cursor.fetchall()
         return [row["user_id"] for row in rows]
 
-# Orders / Withdrawal helpers
+# --- ADVANCED STATS HELPERS ---
+
+async def get_detailed_user_stats() -> dict:
+    async with get_connection() as conn:
+        total = (await (await conn.execute("SELECT COUNT(*) FROM users")).fetchone())[0]
+
+        today_str = datetime.date.today().strftime("%Y-%m-%d")
+        today = (await (await conn.execute("SELECT COUNT(*) FROM users WHERE DATE(joined_at) = ?", (today_str,))).fetchone())[0]
+
+        # Active users in last 24h and last 7 days
+        since_24h = (datetime.datetime.now() - datetime.timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        active_24h = (await (await conn.execute("SELECT COUNT(*) FROM users WHERE last_active >= ?", (since_24h,))).fetchone())[0]
+
+        since_7d = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+        active_7d = (await (await conn.execute("SELECT COUNT(*) FROM users WHERE last_active >= ?", (since_7d,))).fetchone())[0]
+
+        banned = (await (await conn.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")).fetchone())[0]
+        total_referrals = (await (await conn.execute("SELECT COALESCE(SUM(referrals_count), 0) FROM users")).fetchone())[0]
+
+        sum_balances = (await (await conn.execute("SELECT COALESCE(SUM(balance), 0) FROM users")).fetchone())[0]
+        sum_withdrawn = (await (await conn.execute("SELECT COALESCE(SUM(total_withdrawn), 0) FROM users")).fetchone())[0]
+
+        return {
+            "total_users": total,
+            "today_users": today,
+            "active_users_24h": active_24h,
+            "active_users_7d": active_7d,
+            "banned_users": banned,
+            "total_referrals": total_referrals,
+            "sum_balances": sum_balances,
+            "sum_withdrawn": sum_withdrawn
+        }
+
+async def get_top_referrers(limit: int = 10) -> list[dict]:
+    async with get_connection() as conn:
+        cursor = await conn.execute("""
+            SELECT user_id, full_name, username, referrals_count, balance, total_withdrawn
+            FROM users
+            WHERE referrals_count > 0
+            ORDER BY referrals_count DESC
+            LIMIT ?
+        """, (limit,))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+async def get_recent_users(limit: int = 10) -> list[dict]:
+    async with get_connection() as conn:
+        cursor = await conn.execute("""
+            SELECT user_id, full_name, username, balance, referrals_count, joined_at
+            FROM users
+            ORDER BY joined_at DESC
+            LIMIT ?
+        """, (limit,))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+# --- ORDERS HELPERS ---
+
 async def create_withdrawal_order(user_id: int, amount: float, target_account: str) -> int | None:
     async with get_connection() as conn:
         cursor = await conn.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
@@ -238,7 +366,8 @@ async def update_order_status(order_id: int, status: str, reject_reason: str = N
         updated = await cur2.fetchone()
         return dict(updated) if updated else None
 
-# Channels (Mandatory Subscription) helpers
+# --- CHANNELS HELPERS ---
+
 async def get_channels():
     async with get_connection() as conn:
         cursor = await conn.execute("SELECT * FROM channels")
@@ -263,28 +392,35 @@ async def delete_channel(channel_id: str):
         await conn.execute("DELETE FROM channels WHERE channel_id = ?", (channel_id,))
         await conn.commit()
 
-# Stats helpers
+# --- SETTINGS HELPERS ---
+
+async def get_setting(key: str, default: str = "") -> str:
+    async with get_connection() as conn:
+        cursor = await conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row["value"] if row else default
+
+async def set_setting(key: str, value: str):
+    async with get_connection() as conn:
+        await conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value)))
+        await conn.commit()
+
 async def get_stats():
     async with get_connection() as conn:
-        total_users = (await (await conn.execute("SELECT COUNT(*) FROM users")).fetchone())[0]
-        today = datetime.date.today().strftime("%Y-%m-%d")
-        today_users = (await (await conn.execute("SELECT COUNT(*) FROM users WHERE DATE(joined_at) = ?", (today,))).fetchone())[0]
+        u_stats = await get_detailed_user_stats()
 
         total_orders = (await (await conn.execute("SELECT COUNT(*) FROM orders")).fetchone())[0]
         pending_orders = (await (await conn.execute("SELECT COUNT(*) FROM orders WHERE status = 'pending'")).fetchone())[0]
         approved_orders = (await (await conn.execute("SELECT COUNT(*) FROM orders WHERE status = 'approved'")).fetchone())[0]
         rejected_orders = (await (await conn.execute("SELECT COUNT(*) FROM orders WHERE status = 'rejected'")).fetchone())[0]
 
-        sum_withdrawn = (await (await conn.execute("SELECT COALESCE(SUM(amount), 0) FROM orders WHERE status = 'approved'")).fetchone())[0]
-        sum_balances = (await (await conn.execute("SELECT COALESCE(SUM(balance), 0) FROM users")).fetchone())[0]
+        admins_count = (await (await conn.execute("SELECT COUNT(*) FROM admins")).fetchone())[0]
 
         return {
-            "total_users": total_users,
-            "today_users": today_users,
+            **u_stats,
             "total_orders": total_orders,
             "pending_orders": pending_orders,
             "approved_orders": approved_orders,
             "rejected_orders": rejected_orders,
-            "sum_withdrawn": sum_withdrawn,
-            "sum_balances": sum_balances
+            "admins_count": admins_count
         }

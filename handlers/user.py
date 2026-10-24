@@ -9,10 +9,26 @@ from utils.subscription import check_user_subscription
 
 router = Router()
 
+# Ban check middleware / filter helper
+async def check_ban(message_or_call) -> bool:
+    user_id = message_or_call.from_user.id
+    user = await db.get_user(user_id)
+    if user and user.get("is_banned") == 1:
+        if isinstance(message_or_call, Message):
+            await message_or_call.answer("🚫 <b>Siz botdan bloklangansiz!</b> Murojaat uchun adminga yozing.", parse_mode="HTML")
+        elif isinstance(message_or_call, CallbackQuery):
+            await message_or_call.answer("🚫 Siz botdan bloklangansiz!", show_alert=True)
+        return True
+    return False
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, bot: Bot, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
+
+    if await check_ban(message):
+        return
+
     full_name = message.from_user.full_name
     username = message.from_user.username or ""
 
@@ -27,7 +43,6 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot, state: F
     # Check mandatory channels
     is_subbed, unjoined = await check_user_subscription(bot, user_id)
     if not is_subbed:
-        # Save referrer in state so we can reward when they finish subscription
         if referred_by:
             await state.update_data(referred_by=referred_by)
         kb = get_sub_channels_keyboard(unjoined)
@@ -39,7 +54,7 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot, state: F
         )
         return
 
-    # User is subscribed, register in DB
+    # User is subscribed, register or update in DB
     user_data, is_new = await db.add_or_update_user(user_id, full_name, username, referred_by)
 
     # If new user and referred by someone
@@ -58,22 +73,28 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot, state: F
         except Exception:
             pass
 
+    is_admin = await db.is_user_admin(user_id)
     welcome_text = (
         f"👋 <b>Assalomu alaykum, {full_name}!</b>\n\n"
-        f"🌟 <b>Pro Stars Bot</b>ga xush kelibsiz!\n"
-        f"Bu yerda do'stlaringizni taklif qilib, bepul <b>Telegram Stars</b> to'plashingiz va o'z hisobingizga yechib olishingiz mumkin.\n\n"
-        f"👇 Kerakli bo'limni tanlang:"
+        f"🌟 <b>Pro Stars Bot</b>ga xush kelibsiz!\n\n"
+        f"Bu yerda siz:\n"
+        f"⭐ Do'stlaringizni taklif qilib, bepul <b>Telegram Stars</b> ishlashingiz\n"
+        f"💸 Yig'ilgan yulduzlarni <b>15 ⭐</b> dan boshlab to'g'ridan-to'g'ri hisobingizga yechib olishingiz mumkin!\n\n"
+        f"🚀 <i>Boshlash uchun quyidagi menyudan foydalaning:</i>"
     )
 
     await message.answer(
         welcome_text,
         parse_mode="HTML",
-        reply_markup=get_main_keyboard(user_id)
+        reply_markup=get_main_keyboard(is_admin)
     )
 
 @router.callback_query(F.data == "check_subscription")
 async def callback_check_subscription(call: CallbackQuery, bot: Bot, state: FSMContext):
     user_id = call.from_user.id
+    if await check_ban(call):
+        return
+
     full_name = call.from_user.full_name
     username = call.from_user.username or ""
 
@@ -113,17 +134,29 @@ async def callback_check_subscription(call: CallbackQuery, bot: Bot, state: FSMC
     except Exception:
         pass
 
-    await call.message.answer(
+    is_admin = await db.is_user_admin(user_id)
+    welcome_text = (
         f"👋 <b>Xush kelibsiz, {full_name}!</b>\n\n"
-        f"🌟 Bepul Telegram Stars ishlashni boshlash uchun quyidagi tugmalardan foydalaning:",
+        f"🌟 <b>Pro Stars Bot</b>ga xush kelibsiz!\n\n"
+        f"Bu yerda siz:\n"
+        f"⭐ Do'stlaringizni taklif qilib, bepul <b>Telegram Stars</b> ishlashingiz\n"
+        f"💸 Yig'ilgan yulduzlarni <b>15 ⭐</b> dan boshlab to'g'ridan-to'g'ri hisobingizga yechib olishingiz mumkin!\n\n"
+        f"🚀 <i>Boshlash uchun quyidagi menyudan foydalaning:</i>"
+    )
+    await call.message.answer(
+        welcome_text,
         parse_mode="HTML",
-        reply_markup=get_main_keyboard(user_id)
+        reply_markup=get_main_keyboard(is_admin)
     )
 
 # ⭐ Stars ishlash
 @router.message(F.text == "⭐ Stars ishlash")
 async def msg_stars_earn(message: Message, bot: Bot):
+    if await check_ban(message):
+        return
+
     user_id = message.from_user.id
+    await db.touch_user_activity(user_id)
     bot_info = await bot.get_me()
     ref_bonus = await db.get_setting("ref_bonus", "2")
 
@@ -145,7 +178,11 @@ async def msg_stars_earn(message: Message, bot: Bot):
 # 👤 Hisobim
 @router.message(F.text == "👤 Hisobim")
 async def msg_profile(message: Message):
+    if await check_ban(message):
+        return
+
     user_id = message.from_user.id
+    await db.touch_user_activity(user_id)
     user = await db.get_user(user_id)
     if not user:
         user, _ = await db.add_or_update_user(user_id, message.from_user.full_name, message.from_user.username or "")
@@ -169,7 +206,11 @@ async def msg_profile(message: Message):
 # 📋 So'rovlarim
 @router.message(F.text == "📋 So'rovlarim")
 async def msg_my_orders(message: Message):
+    if await check_ban(message):
+        return
+
     user_id = message.from_user.id
+    await db.touch_user_activity(user_id)
     orders = await db.get_user_orders(user_id, limit=10)
 
     if not orders:
@@ -206,20 +247,24 @@ async def msg_my_orders(message: Message):
 # 📖 Qo'llanma
 @router.message(F.text == "📖 Qo'llanma")
 async def msg_guide(message: Message):
+    if await check_ban(message):
+        return
+
+    user_id = message.from_user.id
+    await db.touch_user_activity(user_id)
     ref_bonus = await db.get_setting("ref_bonus", "2")
     min_withdraw = await db.get_setting("min_withdraw", "15")
 
     text = (
         f"📖 <b>Botdan foydalanish qo'llanmasi</b>\n\n"
         f"1️⃣ <b>Stars ishlash:</b>\n"
-        f"«⭐ Stars ishlash» tugmasini bosing va shaxsiy referal havolangizni nusxalang. Uni do'stlaringizga, guruhlarga yoki kanallarga tarqating.\n\n"
+        f"«⭐ Stars ishlash» tugmasini bosing va shaxsiy referal havolangizni oling. Uni do'stlaringizga yoki guruhlarga yuboring.\n\n"
         f"2️⃣ <b>Mukofot:</b>\n"
         f"Havolangiz orqali botga kirgan har bir do'stingiz uchun sizga <b>{ref_bonus} ⭐</b> beriladi.\n\n"
         f"3️⃣ <b>Stars yechib olish:</b>\n"
         f"Hisobingizda minimal <b>{min_withdraw} ⭐</b> to'planganda, «⭐ Stars yechish» bo'limi orqali buyurtma bera olasiz.\n\n"
         f"4️⃣ <b>Yetkazib berish:</b>\n"
-        f"Yechish so'rovi yuborilgach, adminlarimiz uni tekshirib, Starsni Telegram profilingizga (sovg'a) yoki kanalingiz postiga reaksiya sifatida yuboradi.\n\n"
-        f"❓ Savollar bo'lsa, adminlarimizga murojaat qilishingiz mumkin."
+        f"Adminlar so'rovni tekshirib, Starsni Telegram profilingizga yoki kanalingiz postiga jo'natishadi."
     )
 
     await message.answer(text, parse_mode="HTML")

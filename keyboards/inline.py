@@ -1,5 +1,6 @@
 import urllib.parse
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from config import SUPER_ADMINS
 
 def get_share_keyboard(bot_username: str, user_id: int, ref_bonus: str) -> InlineKeyboardMarkup:
     ref_link = f"https://t.me/{bot_username}?start=ref{user_id}"
@@ -66,5 +67,53 @@ def get_admin_channels_keyboard(channels: list[dict]) -> InlineKeyboardMarkup:
         ])
     buttons.append([
         InlineKeyboardButton(text="➕ Yangi kanal qo'shish", callback_data="add_channel")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# Users Management Inline Keyboards
+def get_users_mgmt_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🏆 Top 10 Referallar", callback_data="users:top_referrers"),
+                InlineKeyboardButton(text="🆕 So'nggi 10 ta user", callback_data="users:recent")
+            ],
+            [
+                InlineKeyboardButton(text="🔍 Foydalanuvchini qidirish", callback_data="users:search")
+            ]
+        ]
+    )
+
+def get_user_actions_keyboard(user_id: int, is_banned: bool) -> InlineKeyboardMarkup:
+    ban_text = "✅ Blokdan chiqarish" if is_banned else "🚫 Bloklash"
+    ban_action = "unban" if is_banned else "ban"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💰 Balansni o'zgartirish", callback_data=f"uact:balance:{user_id}"),
+                InlineKeyboardButton(text=ban_text, callback_data=f"uact:{ban_action}:{user_id}")
+            ],
+            [
+                InlineKeyboardButton(text="✉️ Shaxsiy xabar yuborish", callback_data=f"uact:dm:{user_id}")
+            ]
+        ]
+    )
+
+# Admins Management Inline Keyboards
+def get_admins_mgmt_keyboard(admins: list[dict]) -> InlineKeyboardMarkup:
+    buttons = []
+    for adm in admins:
+        uid = adm["user_id"]
+        name = adm.get("full_name") or f"Admin {uid}"
+        is_super = uid in SUPER_ADMINS
+
+        row = [InlineKeyboardButton(text=f"{'👑' if is_super else '👤'} {name} ({uid})", callback_data="noop")]
+        if not is_super:
+            row.append(InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"deladmin:{uid}"))
+        buttons.append(row)
+
+    buttons.append([
+        InlineKeyboardButton(text="➕ Yangi Admin qo'shish", callback_data="add_admin")
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
