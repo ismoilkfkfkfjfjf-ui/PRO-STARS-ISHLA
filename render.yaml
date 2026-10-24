@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: pro-stars-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMINS
+        value: "618430308,8422157752"
+      - key: DEFAULT_REF_BONUS
+        value: "2"
+      - key: MIN_WITHDRAW
+        value: "15"
+      - key: PORT
+        value: "8080"
