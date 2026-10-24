@@ -32,14 +32,14 @@ async def init_db():
                 last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by);")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active);")
-
         # In case table was created earlier without last_active
         try:
             await conn.execute("ALTER TABLE users ADD COLUMN last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         except Exception:
             pass
+
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active);")
 
         # Admins table
         await conn.execute("""
